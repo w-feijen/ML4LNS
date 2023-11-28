@@ -1,0 +1,155 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Nov  5 16:11:42 2021
+
+@author: WFN2
+"""
+
+import math
+import json
+import vroom
+
+CUSTOM_PRECISION = 1000
+
+vroom_exploration_level = 10
+
+def nint(x):
+    return int(x + 0.5)
+
+def euc_2D(c1, c2, PRECISION=1):
+    xd = c1[0] - c2[0]
+    yd = c1[1] - c2[1]
+    return nint(PRECISION * math.sqrt(xd * xd + yd * yd))
+
+def get_matrix(coords, PRECISION=1):
+    ''' Compute matrix based on ordered list of coordinates. '''
+    N = len(coords)
+    matrix = [[0 for i in range(N)] for j in range(N)]
+
+    for i in range(N):
+        for j in range(i + 1, N):
+            value = euc_2D(coords[i], coords[j], PRECISION)
+            matrix[i][j] = value
+            matrix[j][i] = value
+
+    return matrix
+
+
+def get_subproblem_json(vehicles, use_warm_start = True):
+    '''Creates a dictionary, based on VROOM style, on which we can apply VROOM solver.
+    Only the given vehicles are in this dictionary'''
+    
+    instance = vehicles[0].instance
+    capacity = instance.capacity
+    start = instance.depot.start * CUSTOM_PRECISION
+    end = instance.depot.end * CUSTOM_PRECISION
+    
+    meta = {}
+    meta["NAME"] = instance.name
+    meta["VEHICLES"] = len(vehicles)
+    meta["CAPACITY"] = capacity
+    meta["JOBS"] = sum(len(v.route) for v in vehicles)
+    meta["TIME WINDOW"] = [start, end]
+    
+    
+    location_index = 0
+    coords = [[instance.depot.x, instance.depot.y]]
+    jobs = []
+    
+    for v in vehicles:
+        for c in v.route:
+            location_index += 1
+            jobs.append(
+                {
+                    "id": int(c.nr),
+                    "location": [c.x, c.y],
+                    "location_index": location_index,
+                    "amount": [c.demand],
+                    "time_windows": [
+                        [
+                            CUSTOM_PRECISION * c.start,
+                            CUSTOM_PRECISION * c.end,
+                        ]
+                    ],
+                    "service": CUSTOM_PRECISION * c.service,
+                })
+            coords.append([c.x, c.y])
+   
+    vehicles_list = []
+    for v in vehicles:
+        
+        v_dict = {
+            "id": v.nr,
+            "start": coords[0],
+            "start_index": 0,
+            "end": coords[0],
+            "end_index": 0,
+            "capacity": [capacity],
+            "time_window": [start, end] 
+            }
+        if use_warm_start:
+            steps = []
+            for c in v.route:
+                steps.append({
+                    "type": "job",
+                    "id" : c.nr,
+                    "service_at" : int(CUSTOM_PRECISION * v.get_delivery(c).service_start)
+                    })
+            
+            v_dict['steps'] = steps
+        
+        vehicles_list.append(v_dict)
+
+
+    matrix = get_matrix(coords, CUSTOM_PRECISION)
+    
+    subproblem_dict = {"meta": meta, "vehicles": vehicles_list, "jobs": jobs, "matrix": matrix}
+    return json.dumps(subproblem_dict)
+
+def vroom_subproblem( subproblem_json ):
+    ''' Take the subpbolem in the json file, create a vroom instance from it and solve it with vroom 
+    Return a dict of the subsolution. '''
+    instance = vroom.Input()
+    instance._from_json(subproblem_json, False)
+    solution = instance.solve(exploration_level=vroom_exploration_level, nb_threads=4)
+    return solution.to_dict()
+
+def add_subsolution_to_solution(old_vehicles, subsolution_result):
+    ''' The routes of the old vehicles are updated with the subsolution computed by VROOM 
+    '''
+    route_dicts = subsolution_result['routes']
+    instance = old_vehicles[0].instance
+    assert len(old_vehicles) >= len(route_dicts)
+    new_routes = []
+        
+    for v, veh_dic in zip(old_vehicles, route_dicts):
+        route = [instance.customers[step['job']-1] for step in veh_dic['steps'] if step['type']=='job']
+        new_routes += [route]
+
+    if len(old_vehicles) > len(route_dicts):
+        print(f'solution found by Vroom with less vehicles {len(route_dicts)} than available {len(old_vehicles)}')
+        for v_index in range(len(route_dicts), len(old_vehicles)):
+            print(f'Route {old_vehicles[v_index].nr} becomes an empty route')
+            new_routes += [[]]
+    
+    return new_routes
+
+def vroom_insert(vehicles, debug):
+    
+    ''' Create a subsolution for the given vehicles, solve that with vroom and create new routes for these vehicles. 
+    In case VROOM finds no solution, new_routes remains None'''
+    
+    new_routes = None
+    
+    msg = '-'.join([f'{v.nr:2}' for v in vehicles])
+    use_warm_start = True
+    subproblem_json = get_subproblem_json(vehicles, use_warm_start)
+    
+    subsolution_result = vroom_subproblem( subproblem_json )
+    
+    if subsolution_result['code'] == 0:
+        if subsolution_result['summary']['unassigned']==0:
+            new_routes = add_subsolution_to_solution(vehicles, subsolution_result)
+    else:
+        msg += 'no feasible solution found: error: ' + subsolution_result['error']
+    return new_routes, msg
