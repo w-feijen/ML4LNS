@@ -6,10 +6,9 @@
     unzip \*.zip
 - Create an environment (choose a name for it) with the required packages and install pyvroom using pip:
 
-
-    conda create -n [envname] python=3.11.4 scikit-learn=1.2.2 imbalanced-learn=0.10.1 joblib
-    conda activate [envname]
-    pip install pyvroom
+      conda create -n [envname] python=3.11.4 scikit-learn=1.2.2 imbalanced-learn=0.10.1 joblib
+      conda activate [envname]
+      pip install pyvroom
 
 ## Run instructions 
     cd ./ML4LNS/code/
